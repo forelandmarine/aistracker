@@ -6,18 +6,40 @@ const { Pool } = pg;
 const app = express();
 const port = process.env.PORT || 3000;
 
-// PostgreSQL connection
+// PostgreSQL connection with retry logic
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL?.includes('localhost') ? false : { rejectUnauthorized: false }
+  ssl: process.env.DATABASE_URL?.includes('localhost') ? false : { rejectUnauthorized: false },
+  connectionTimeoutMillis: 10000,
+  max: 20,
+  idleTimeoutMillis: 30000,
+  allowExitOnIdle: false
 });
+
+// Database connection with retry
+async function connectWithRetry(maxRetries = 5, delay = 3000) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      console.log(`Database connection attempt ${i + 1}/${maxRetries}...`);
+      await pool.query('SELECT NOW()');
+      console.log('Database connected successfully');
+      return;
+    } catch (error) {
+      console.error(`Connection attempt ${i + 1} failed:`, error.message);
+      if (i < maxRetries - 1) {
+        console.log(`Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        throw new Error(`Failed to connect after ${maxRetries} attempts`);
+      }
+    }
+  }
+}
 
 // Initialize database tables
 async function initDatabase() {
   try {
-    console.log('Connecting to database...');
-    await pool.query('SELECT NOW()'); // Test connection
-    console.log('Database connected successfully');
+    await connectWithRetry();
     
     await pool.query(`
     CREATE TABLE IF NOT EXISTS vessels (
@@ -228,6 +250,7 @@ app.get('/api/positions/since', async (req, res) => {
 
 app.listen(port, async () => {
   console.log(`Server running on port ${port}`);
+  console.log('Railway Professional Plan - WebSocket will stay connected 24/7');
   
   if (!process.env.DATABASE_URL) {
     console.error('ERROR: DATABASE_URL not set! Please add PostgreSQL database in Railway.');
@@ -241,9 +264,11 @@ app.listen(port, async () => {
   
   try {
     await initDatabase();
+    console.log('Starting AIS WebSocket connection for yachts...');
     connectAIS();
   } catch (error) {
     console.error('Startup failed:', error);
+    console.error('Ensure PostgreSQL database is running and DATABASE_URL is correct');
     process.exit(1);
   }
 });
