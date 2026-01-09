@@ -135,12 +135,11 @@ function connectAIS() {
   ws = new WebSocket('wss://stream.aisstream.io/v0/stream');
 
   ws.on('open', () => {
-    console.log('Connected to AISStream - listening for yachts only');
+    console.log('Connected to AISStream - listening for all vessels');
     const subscription = {
       APIKey: process.env.AISSTREAM_API_KEY,
       BoundingBoxes: [[[-90, -180], [90, 180]]],
-      FilterMessageTypes: ['PositionReport', 'ShipStaticData'],
-      FilterShipTypes: [36] // Type 36 = Sailing Yacht
+      FilterMessageTypes: ['PositionReport', 'ShipStaticData']
     };
     ws.send(JSON.stringify(subscription));
   });
@@ -200,9 +199,7 @@ function connectAIS() {
         const meta = msg.MetaData;
         
         if (meta?.MMSI) {
-          // Only store if it's a yacht type (36 = sailing yacht, 37 = motor yacht)
           const shipType = String(ship.Type || 'unknown');
-          const isYacht = shipType === '36' || shipType === '37' || shipType.toLowerCase().includes('yacht');
           
           await pool.query(
             `INSERT INTO vessels (mmsi, name, callsign, imo, vessel_type, length, width, updated_at)
@@ -220,7 +217,7 @@ function connectAIS() {
               ship.Name || meta.ShipName || `Vessel ${meta.MMSI}`,
               ship.CallSign || null,
               ship.ImoNumber ? String(ship.ImoNumber) : null,
-              isYacht ? 'yacht' : shipType,
+              shipType,
               (ship.Dimension?.A || 0) + (ship.Dimension?.B || 0) || null,
               (ship.Dimension?.C || 0) + (ship.Dimension?.D || 0) || null
             ]
@@ -308,7 +305,7 @@ app.listen(port, async () => {
   
   try {
     await initDatabase();
-    console.log('Starting AIS WebSocket connection for yachts...');
+    console.log('Starting AIS WebSocket connection for all vessels...');
     connectAIS();
     
     // Run initial cleanup
