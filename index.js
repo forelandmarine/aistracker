@@ -86,6 +86,50 @@ async function initDatabase() {
 
 let ws;
 
+// Cleanup old records and manage disk usage
+async function cleanupOldData() {
+  try {
+    console.log('Running data cleanup...');
+    
+    // Delete records older than 48 hours
+    const deleteResult = await pool.query(
+      `DELETE FROM ais_positions WHERE created_at < NOW() - INTERVAL '48 hours'`
+    );
+    console.log(`Deleted ${deleteResult.rowCount} records older than 48 hours`);
+    
+    // Check database size
+    const sizeResult = await pool.query(`
+      SELECT pg_database_size(current_database()) as size
+    `);
+    const sizeGB = sizeResult.rows[0].size / (1024 * 1024 * 1024);
+    console.log(`Current database size: ${sizeGB.toFixed(2)} GB`);
+    
+    // If above 9.5GB, delete oldest records until under 9GB
+    if (sizeGB > 9.5) {
+      console.log('Database size exceeds 9.5GB, deleting oldest records...');
+      const targetRecords = await pool.query(`
+        SELECT COUNT(*) as count FROM ais_positions
+      `);
+      const toDelete = Math.ceil(targetRecords.rows[0].count * 0.1); // Delete 10% oldest
+      
+      await pool.query(`
+        DELETE FROM ais_positions 
+        WHERE id IN (
+          SELECT id FROM ais_positions 
+          ORDER BY created_at ASC 
+          LIMIT $1
+        )
+      `, [toDelete]);
+      console.log(`Deleted ${toDelete} oldest records to reduce disk usage`);
+    }
+  } catch (error) {
+    console.error('Cleanup error:', error);
+  }
+}
+
+// Run cleanup every 6 hours
+setInterval(cleanupOldData, 6 * 60 * 60 * 1000);
+
 function connectAIS() {
   console.log('Connecting to AISStream...');
   ws = new WebSocket('wss://stream.aisstream.io/v0/stream');
@@ -266,6 +310,9 @@ app.listen(port, async () => {
     await initDatabase();
     console.log('Starting AIS WebSocket connection for yachts...');
     connectAIS();
+    
+    // Run initial cleanup
+    await cleanupOldData();
   } catch (error) {
     console.error('Startup failed:', error);
     console.error('Ensure PostgreSQL database is running and DATABASE_URL is correct');
