@@ -104,9 +104,9 @@ async function cleanupOldData() {
     const sizeGB = sizeResult.rows[0].size / (1024 * 1024 * 1024);
     console.log(`Current database size: ${sizeGB.toFixed(2)} GB`);
     
-    // If above 70GB, delete oldest records
-    if (sizeGB > 70) {
-      console.log('Database size exceeds 70GB, deleting oldest records...');
+    // If above 65GB, delete oldest records
+    if (sizeGB > 65) {
+      console.log('Database size exceeds 65GB, deleting oldest records...');
       const targetRecords = await pool.query(`
         SELECT COUNT(*) as count FROM ais_positions
       `);
