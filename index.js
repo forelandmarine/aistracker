@@ -9,12 +9,18 @@ const port = process.env.PORT || 3000;
 // PostgreSQL connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: process.env.DATABASE_URL?.includes('localhost') ? false : { rejectUnauthorized: false }
 });
 
-// Create tables
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS vessels (
+// Initialize database tables
+async function initDatabase() {
+  try {
+    console.log('Connecting to database...');
+    await pool.query('SELECT NOW()'); // Test connection
+    console.log('Database connected successfully');
+    
+    await pool.query(`
+    CREATE TABLE IF NOT EXISTS vessels (
     mmsi TEXT PRIMARY KEY,
     name TEXT,
     vessel_type TEXT,
@@ -48,22 +54,27 @@ await pool.query(`
 
   CREATE INDEX IF NOT EXISTS idx_positions_mmsi ON ais_positions(mmsi);
   CREATE INDEX IF NOT EXISTS idx_positions_timestamp ON ais_positions(timestamp DESC);
-`);
+    `);
+    console.log('Database tables initialized');
+  } catch (error) {
+    console.error('Database initialization error:', error);
+    throw error;
+  }
+}
 
 let ws;
-let reconnectTimeout;
-const RECONNECT_DELAY = 5000;
 
 function connectAIS() {
   console.log('Connecting to AISStream...');
   ws = new WebSocket('wss://stream.aisstream.io/v0/stream');
 
   ws.on('open', () => {
-    console.log('Connected to AISStream');
+    console.log('Connected to AISStream - listening for yachts only');
     const subscription = {
       APIKey: process.env.AISSTREAM_API_KEY,
       BoundingBoxes: [[[-90, -180], [90, 180]]],
-      FilterMessageTypes: ['PositionReport', 'ShipStaticData']
+      FilterMessageTypes: ['PositionReport', 'ShipStaticData'],
+      FilterShipTypes: [36] // Type 36 = Sailing Yacht
     };
     ws.send(JSON.stringify(subscription));
   });
@@ -123,6 +134,10 @@ function connectAIS() {
         const meta = msg.MetaData;
         
         if (meta?.MMSI) {
+          // Only store if it's a yacht type (36 = sailing yacht, 37 = motor yacht)
+          const shipType = String(ship.Type || 'unknown');
+          const isYacht = shipType === '36' || shipType === '37' || shipType.toLowerCase().includes('yacht');
+          
           await pool.query(
             `INSERT INTO vessels (mmsi, name, callsign, imo, vessel_type, length, width, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
@@ -139,7 +154,7 @@ function connectAIS() {
               ship.Name || meta.ShipName || `Vessel ${meta.MMSI}`,
               ship.CallSign || null,
               ship.ImoNumber ? String(ship.ImoNumber) : null,
-              String(ship.Type || 'unknown'),
+              isYacht ? 'yacht' : shipType,
               (ship.Dimension?.A || 0) + (ship.Dimension?.B || 0) || null,
               (ship.Dimension?.C || 0) + (ship.Dimension?.D || 0) || null
             ]
@@ -156,8 +171,8 @@ function connectAIS() {
   });
 
   ws.on('close', () => {
-    console.log('Disconnected from AISStream. Reconnecting in 5s...');
-    reconnectTimeout = setTimeout(connectAIS, RECONNECT_DELAY);
+    console.log('Disconnected from AISStream. Reconnecting immediately...');
+    setTimeout(connectAIS, 100);
   });
 }
 
@@ -211,7 +226,24 @@ app.get('/api/positions/since', async (req, res) => {
   }
 });
 
-app.listen(port, () => {
+app.listen(port, async () => {
   console.log(`Server running on port ${port}`);
-  connectAIS();
+  
+  if (!process.env.DATABASE_URL) {
+    console.error('ERROR: DATABASE_URL not set! Please add PostgreSQL database in Railway.');
+    process.exit(1);
+  }
+  
+  if (!process.env.AISSTREAM_API_KEY) {
+    console.error('ERROR: AISSTREAM_API_KEY not set! Please add it in Railway environment variables.');
+    process.exit(1);
+  }
+  
+  try {
+    await initDatabase();
+    connectAIS();
+  } catch (error) {
+    console.error('Startup failed:', error);
+    process.exit(1);
+  }
 });
