@@ -85,6 +85,8 @@ async function initDatabase() {
 }
 
 let ws;
+let isConnected = false;
+let connectionTimeout;
 
 // Cleanup old records and manage disk usage
 async function cleanupOldData() {
@@ -131,10 +133,16 @@ async function cleanupOldData() {
 setInterval(cleanupOldData, 6 * 60 * 60 * 1000);
 
 function connectAIS() {
-  console.log('Connecting to AISStream...');
+  if (isConnected) {
+    console.log('Already connected, skipping...');
+    return;
+  }
+
+  console.log('Connecting to AISStream for 3-minute data capture...');
   ws = new WebSocket('wss://stream.aisstream.io/v0/stream');
 
   ws.on('open', () => {
+    isConnected = true;
     console.log('Connected to AISStream - listening for all vessels');
     const subscription = {
       APIKey: process.env.AISSTREAM_API_KEY,
@@ -142,6 +150,20 @@ function connectAIS() {
       FilterMessageTypes: ['PositionReport', 'ShipStaticData']
     };
     ws.send(JSON.stringify(subscription));
+
+    // Disconnect after 3 minutes
+    connectionTimeout = setTimeout(() => {
+      console.log('3 minutes elapsed, disconnecting...');
+      isConnected = false;
+      if (ws) {
+        ws.close();
+      }
+      // Reconnect after 12 minutes (total 15-minute cycle)
+      setTimeout(() => {
+        console.log('12 minutes wait complete, reconnecting...');
+        connectAIS();
+      }, 12 * 60 * 1000);
+    }, 3 * 60 * 1000);
   });
 
   ws.on('message', async (data) => {
@@ -234,8 +256,12 @@ function connectAIS() {
   });
 
   ws.on('close', () => {
-    console.log('Disconnected from AISStream. Reconnecting immediately...');
-    setTimeout(connectAIS, 100);
+    console.log('Disconnected from AISStream');
+    if (connectionTimeout) {
+      clearTimeout(connectionTimeout);
+    }
+    isConnected = false;
+    // Don't auto-reconnect - let the scheduled cycle handle it
   });
 }
 
@@ -291,7 +317,7 @@ app.get('/api/positions/since', async (req, res) => {
 
 app.listen(port, async () => {
   console.log(`Server running on port ${port}`);
-  console.log('Railway Professional Plan - WebSocket will stay connected 24/7');
+  console.log('Railway - Capturing data for 3 minutes every 15 minutes');
   
   if (!process.env.DATABASE_URL) {
     console.error('ERROR: DATABASE_URL not set! Please add PostgreSQL database in Railway.');
@@ -305,7 +331,7 @@ app.listen(port, async () => {
   
   try {
     await initDatabase();
-    console.log('Starting AIS WebSocket connection for all vessels...');
+    console.log('Starting AIS WebSocket connection cycle (3 min capture / 15 min intervals)...');
     connectAIS();
     
     // Run initial cleanup
